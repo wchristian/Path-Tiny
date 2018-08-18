@@ -95,6 +95,58 @@ BEGIN {
     *_same = IS_WIN32() ? sub { lc( $_[0] ) eq lc( $_[1] ) } : sub { $_[0] eq $_[1] };
 }
 
+sub _set_win32_widechar_dir_funcs {
+    my $HAS_LONGPATH = do {
+        local $SIG{__DIE__}; # prevent outer handler from being called
+        !!eval {
+            require Win32::LongPath;
+            1;
+        };
+    };
+    my $HAS_WUNICODE = do {
+        local $SIG{__DIE__}; # prevent outer handler from being called
+        !!eval {
+            require Win32::Unicode;
+            1;
+        };
+    };
+    *opendir_u =             #
+      $HAS_LONGPATH ? sub {  #
+        my $dir = Win32::LongPath->new;
+        $dir->opendirL( $_[0] ) or return;
+        $_[0] = $dir;
+        return 1;
+      }
+      : $HAS_WUNICODE ? sub {
+        my $dir = Win32::Unicode::Dir->new;
+        $dir->open( $_[0] ) or return;
+        $_[0] = $dir;
+        return 1;
+      }
+      : \&CORE::opendir;
+    *readdir_u =
+        $HAS_LONGPATH ? \&Win32::LongPath::readdirL
+      : $HAS_WUNICODE ? \&Win32::Unicode::Dir::fetch
+      :                 \&CORE::readdir;
+    *closedir_u =
+        $HAS_LONGPATH ? \&Win32::LongPath::closedirL
+      : $HAS_WUNICODE ? \&Win32::Unicode::Dir::close
+      :                 \&CORE::closedir;
+    return;
+}
+
+BEGIN {
+    sub opendir_u;
+    sub readdir_u;
+    sub closedir_u;
+    no warnings 'prototype';
+    *opendir_u = \&CORE::opendir;
+    *readdir_u = \&CORE::readdir;
+    *closedir_u = \&CORE::closedir;
+    _set_win32_widechar_dir_funcs() if IS_WIN32();
+}
+
+
 # mode bits encoded for chmod in symbolic mode
 my %MODEBITS = ( om => 0007, gm => 0070, um => 0700 ); ## no critic
 { my $m = 0; $MODEBITS{$_} = ( 1 << $m++ ) for qw/ox ow or gx gw gr ux uw ur/ };
@@ -714,9 +766,9 @@ Current API available since 0.028.
 sub children {
     my ( $self, $filter ) = @_;
     my $dh;
-    opendir $dh, $self->[PATH] or $self->_throw('opendir');
-    my @children = readdir $dh;
-    closedir $dh or $self->_throw('closedir');
+    opendir_u $dh, $self->[PATH] or $self->_throw('opendir');
+    my @children = readdir_u $dh;
+    closedir_u $dh or $self->_throw('closedir');
 
     if ( not defined $filter ) {
         @children = grep { $_ ne '.' && $_ ne '..' } @children;
@@ -1190,7 +1242,7 @@ sub iterator {
                 }
                 $current = $dirs[0];
                 my $dh;
-                opendir( $dh, $current->[PATH] )
+                opendir_u( $dh, $current->[PATH] )
                   or $self->_throw( 'opendir', $current->[PATH] );
                 $dirs[0] = $dh;
                 if ( -l $current->[PATH] && !$args->{follow_symlinks} ) {
@@ -1201,7 +1253,7 @@ sub iterator {
                     shift @dirs and next;
                 }
             }
-            while ( defined( $next = readdir $dirs[0] ) ) {
+            while ( defined( $next = readdir_u $dirs[0] ) ) {
                 next if $next eq '.' || $next eq '..';
                 my $path = $current->child($next);
                 push @dirs, $path
